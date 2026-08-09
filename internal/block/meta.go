@@ -140,26 +140,6 @@ func WriteMeta(dir string, m *Meta) error {
 	return syncDir(dir)
 }
 
-// syncDir fsyncs a directory so that entries created or renamed in it survive
-// a crash. Skipping this is the classic way to end up with a file that exists
-// but is not linked into its directory after power loss.
-func syncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	defer d.Close()
-	if err := d.Sync(); err != nil {
-		// Directory fsync is not supported everywhere; on those systems the
-		// rename is already durable.
-		if isNotSupported(err) {
-			return nil
-		}
-		return err
-	}
-	return nil
-}
-
 // ID identifies a block. It is a 16-byte value rendered as 26 characters of
 // Crockford base32: a 48-bit millisecond timestamp followed by 80 bits of
 // randomness, in the manner of a ULID.

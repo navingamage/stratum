@@ -44,8 +44,29 @@ func munmapFile(b []byte) error {
 	return syscall.Munmap(b)
 }
 
-// isNotSupported reports whether an error means the operation is unavailable
-// on this filesystem, as opposed to having genuinely failed.
-func isNotSupported(err error) bool {
-	return errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP)
+// syncDir fsyncs a directory so that entries created or renamed in it survive
+// a crash.
+//
+// This is the step people forget. A rename is only durable once the directory
+// entry recording it is, so skipping this is the classic way to end up, after
+// power loss, with a block whose files all exist but which is not linked into
+// its parent directory.
+//
+// Some filesystems do not support syncing a directory at all and say so with
+// EINVAL or ENOTSUP. On those the rename is already durable, so the error is
+// not one.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+
+	if err := d.Sync(); err != nil {
+		if errors.Is(err, syscall.EINVAL) || errors.Is(err, syscall.ENOTSUP) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }

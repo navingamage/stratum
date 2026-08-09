@@ -36,8 +36,10 @@ FUZZTIME ?= 30s
 .PHONY: fuzz
 fuzz:
 	$(GO) test -run '^$$' -fuzz FuzzChunkRoundTrip -fuzztime $(FUZZTIME) ./internal/chunk
-	$(GO) test -run '^$$' -fuzz FuzzWALRecovery   -fuzztime $(FUZZTIME) ./internal/wal
-	$(GO) test -run '^$$' -fuzz FuzzParser        -fuzztime $(FUZZTIME) ./internal/query
+	$(GO) test -run '^$$' -fuzz FuzzChunkDecode    -fuzztime $(FUZZTIME) ./internal/chunk
+	$(GO) test -run '^$$' -fuzz FuzzWALRecovery    -fuzztime $(FUZZTIME) ./internal/wal
+	$(GO) test -run '^$$' -fuzz FuzzRecordDecode   -fuzztime $(FUZZTIME) ./internal/wal
+	$(GO) test -run '^$$' -fuzz FuzzParser         -fuzztime $(FUZZTIME) ./internal/query
 
 .PHONY: bench
 bench:

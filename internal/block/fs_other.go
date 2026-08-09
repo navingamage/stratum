@@ -33,6 +33,14 @@ func mmapFile(f *os.File) ([]byte, error) {
 // munmapFile releases the buffer. Garbage collection does the real work.
 func munmapFile([]byte) error { return nil }
 
-// isNotSupported reports whether an error means the operation is unavailable
-// on this platform.
-func isNotSupported(error) bool { return false }
+// syncDir is a no-op away from unix.
+//
+// Windows has no way to fsync a directory: opening one and calling Sync on the
+// handle fails outright with ERROR_ACCESS_DENIED. It also does not need one in
+// the same way - MoveFileEx orders the metadata update itself, so a completed
+// rename is already recorded.
+//
+// This was not a guess. The Windows CI job, which exists to exercise the
+// read-into-memory fallback below, failed every block test with "Access is
+// denied" until directory syncing was confined to the platforms that have it.
+func syncDir(string) error { return nil }
