@@ -187,7 +187,26 @@ func (d *Decbuf) Varint64() int64 {
 	return x
 }
 
-func (d *Decbuf) Uvarint() int { return int(d.Uvarint64()) }
+// Uvarint reads a uvarint that is expected to fit in an int.
+//
+// The range check is the whole point of this method existing separately from
+// Uvarint64. A uvarint large enough to overflow an int converts to a *negative*
+// number, which then sails through every `len(buf) < n` bounds check written
+// the obvious way and panics on the slice expression underneath. A corrupt
+// record would take the process down rather than being rejected - which is
+// exactly what a fuzzer found here, via a nine-byte label length in a WAL
+// series record.
+func (d *Decbuf) Uvarint() int {
+	x := d.Uvarint64()
+	if d.E != nil {
+		return 0
+	}
+	if x > uint64(math.MaxInt) {
+		d.E = ErrInvalidSize
+		return 0
+	}
+	return int(x)
+}
 
 // UvarintBytes returns a length-prefixed slice that aliases the underlying
 // buffer. Callers must not retain it beyond the lifetime of that buffer; for
@@ -197,7 +216,9 @@ func (d *Decbuf) UvarintBytes() []byte {
 	if d.E != nil {
 		return nil
 	}
-	if len(d.B) < n {
+	// n < 0 is unreachable now that Uvarint range-checks, but the slice
+	// expression below is the thing that panics, so the guard stays next to it.
+	if n < 0 || len(d.B) < n {
 		d.E = ErrInvalidSize
 		return nil
 	}

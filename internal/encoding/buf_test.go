@@ -91,6 +91,60 @@ func TestDecbufTruncatedVarint(t *testing.T) {
 	}
 }
 
+// TestDecbufRejectsOversizedLength covers the bug a fuzzer found in the WAL
+// record decoder, pinned here at the layer it actually lived in.
+//
+// A uvarint too large for an int converts to a negative number. The obvious
+// bounds check, `len(buf) < n`, is false for a negative n, so the length passes
+// validation and the slice expression underneath panics - a corrupt record
+// taking the process down instead of being rejected.
+func TestDecbufRejectsOversizedLength(t *testing.T) {
+	// A uvarint whose value exceeds MaxInt.
+	huge := []byte{0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xC6, 0xD3, 0x01}
+
+	t.Run("Uvarint", func(t *testing.T) {
+		d := NewDecbuf(huge)
+		if got := d.Uvarint(); got != 0 {
+			t.Errorf("Uvarint() = %d, want 0", got)
+		}
+		if !errors.Is(d.Err(), ErrInvalidSize) {
+			t.Errorf("Err() = %v, want ErrInvalidSize", d.Err())
+		}
+	})
+
+	t.Run("UvarintBytes", func(t *testing.T) {
+		d := NewDecbuf(append(append([]byte(nil), huge...), 'p', 'a', 'y'))
+		if got := d.UvarintBytes(); got != nil {
+			t.Errorf("UvarintBytes() = %v, want nil", got)
+		}
+		if !errors.Is(d.Err(), ErrInvalidSize) {
+			t.Errorf("Err() = %v, want ErrInvalidSize", d.Err())
+		}
+	})
+
+	t.Run("UvarintStr", func(t *testing.T) {
+		d := NewDecbuf(append(append([]byte(nil), huge...), 'p', 'a', 'y'))
+		if got := d.UvarintStr(); got != "" {
+			t.Errorf("UvarintStr() = %q, want empty", got)
+		}
+		if !errors.Is(d.Err(), ErrInvalidSize) {
+			t.Errorf("Err() = %v, want ErrInvalidSize", d.Err())
+		}
+	})
+
+	// Uvarint64 still reports the raw value: only the int-sized accessor,
+	// whose result feeds slice bounds, needs the range check.
+	t.Run("Uvarint64 is unaffected", func(t *testing.T) {
+		d := NewDecbuf(huge)
+		if got := d.Uvarint64(); got == 0 {
+			t.Error("Uvarint64() = 0; the raw value should still decode")
+		}
+		if d.Err() != nil {
+			t.Errorf("Err() = %v, want nil", d.Err())
+		}
+	})
+}
+
 func TestDecbufUvarintBytesLengthOverrun(t *testing.T) {
 	// Claims 10 bytes of payload but only supplies 2.
 	d := NewDecbuf([]byte{10, 0x01, 0x02})
