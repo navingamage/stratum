@@ -273,7 +273,7 @@ func (p *parser) parseUnary() Expr {
 			return nil
 		}
 		if e.Type() == ValueTypeMatrix || e.Type() == ValueTypeString {
-			p.errorf(pos, "unary %s cannot be applied to a %s", op, e.Type())
+			p.errorf(pos, "unary %s cannot be applied to %s", op, e.Type().WithArticle())
 			return nil
 		}
 		if op == tAdd {
@@ -595,7 +595,8 @@ func (p *parser) checkCall(c *Call) error {
 		want := fn.ArgTypes[i]
 		if got := arg.Type(); got != want {
 			return p.errorf(arg.Position(),
-				"argument %d of %s() must be a %s, got a %s", i+1, fn.Name, want, got)
+				"argument %d of %s() must be %s, got %s",
+				i+1, fn.Name, want.WithArticle(), got.WithArticle())
 		}
 	}
 	return nil
@@ -664,12 +665,12 @@ func (p *parser) parseAggregate(op AggregateOp, pos int) Expr {
 
 	if agg.Expr.Type() != ValueTypeVector {
 		p.errorf(agg.Expr.Position(),
-			"%s() requires an instant vector, got a %s", op, agg.Expr.Type())
+			"%s() requires an instant vector, got %s", op, agg.Expr.Type().WithArticle())
 		return nil
 	}
 	if agg.Param != nil && agg.Param.Type() != ValueTypeScalar {
 		p.errorf(agg.Param.Position(),
-			"the first argument to %s() must be a scalar, got a %s", op, agg.Param.Type())
+			"the first argument to %s() must be a scalar, got %s", op, agg.Param.Type().WithArticle())
 		return nil
 	}
 	return agg

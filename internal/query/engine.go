@@ -234,7 +234,7 @@ func (e *Engine) Range(ctx context.Context, q Queryable, expr Expr, start, end, 
 			}
 			series.Samples = append(series.Samples, model.Sample{T: ts, V: float64(v)})
 		default:
-			return nil, fmt.Errorf("%w: a range query cannot produce a %s", ErrInvalidRange, val.Type())
+			return nil, fmt.Errorf("%w: a range query cannot produce %s", ErrInvalidRange, val.Type().WithArticle())
 		}
 	}
 
@@ -497,7 +497,7 @@ func (c *evalContext) evalAggregate(agg *AggregateExpr) (Value, error) {
 	}
 	vec, ok := val.(Vector)
 	if !ok {
-		return nil, fmt.Errorf("query: %s() requires an instant vector, got a %s", agg.Op, val.Type())
+		return nil, fmt.Errorf("query: %s() requires an instant vector, got %s", agg.Op, val.Type().WithArticle())
 	}
 
 	var param float64

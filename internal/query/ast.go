@@ -39,6 +39,15 @@ func (v ValueType) String() string {
 	return "none"
 }
 
+// WithArticle prefixes the type with the right indefinite article, so error
+// messages read as English rather than as "got a instant vector".
+func (v ValueType) WithArticle() string {
+	if v == ValueTypeVector {
+		return "an " + v.String()
+	}
+	return "a " + v.String()
+}
+
 // Expr is a node in the query's abstract syntax tree.
 type Expr interface {
 	// Type reports the value the expression produces.

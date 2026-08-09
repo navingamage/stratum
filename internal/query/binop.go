@@ -46,8 +46,8 @@ func (c *evalContext) evalBinary(b *BinaryExpr) (Value, error) {
 		return vectorVector(b, lv, rv)
 	}
 
-	return nil, fmt.Errorf("query: operator %s cannot combine a %s and a %s",
-		b.Op, lhs.Type(), rhs.Type())
+	return nil, fmt.Errorf("query: operator %s cannot combine %s and %s",
+		b.Op, lhs.Type().WithArticle(), rhs.Type().WithArticle())
 }
 
 // applyOp evaluates one operator on two numbers. The second result reports
