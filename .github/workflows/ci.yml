@@ -1,0 +1,136 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # A weekly run catches breakage from new Go releases and from the fuzzers
+  # finding something the seed corpus never reached.
+  schedule:
+    - cron: "17 4 * * 1"
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26"
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS and Linux exercise the mmap path; Windows exercises the
+        # read-into-memory fallback, which is otherwise never run.
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -count=1 ./...
+
+      - name: Test under the race detector
+        # The race detector is where the concurrency bugs in this project have
+        # actually been found, so it is not optional.
+        run: go test -race -count=1 ./...
+
+  format:
+    name: gofmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt'd:"
+            echo "$unformatted"
+            gofmt -d .
+            exit 1
+          fi
+
+  coverage:
+    name: coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Measure coverage
+        run: |
+          go test -covermode=atomic -coverprofile=coverage.out ./...
+          go tool cover -func=coverage.out | tail -n 1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.out
+
+  fuzz:
+    name: fuzz smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # A short soak on every push. The committed corpus is replayed by the
+      # ordinary `go test` run above, so past crashers are regression tests;
+      # this is the search for new ones.
+      - name: Fuzz the chunk encoding
+        run: go test -run '^$' -fuzz FuzzChunkRoundTrip -fuzztime 60s ./internal/chunk
+
+      - name: Fuzz chunk decoding
+        run: go test -run '^$' -fuzz FuzzChunkDecode -fuzztime 60s ./internal/chunk
+
+      - name: Fuzz write-ahead log recovery
+        run: go test -run '^$' -fuzz FuzzWALRecovery -fuzztime 60s ./internal/wal
+
+      - name: Fuzz record decoding
+        run: go test -run '^$' -fuzz FuzzRecordDecode -fuzztime 60s ./internal/wal
+
+      - name: Fuzz the query parser
+        run: go test -run '^$' -fuzz FuzzParser -fuzztime 60s ./internal/query
+
+      - name: Upload any crashers
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashers
+          path: "**/testdata/fuzz/**"
+
+  benchmark:
+    name: benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      # Run once to confirm the benchmarks still compile and complete. The
+      # numbers from a shared CI runner are too noisy to gate on, so this
+      # catches breakage rather than regressions.
+      - name: Run benchmarks
+        run: go test -run '^$' -bench . -benchtime 10x -benchmem ./...
