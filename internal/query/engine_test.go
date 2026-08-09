@@ -855,8 +855,12 @@ func TestQueryStats(t *testing.T) {
 	if res.Stats.SamplesScanned == 0 {
 		t.Error("SamplesScanned = 0; the scan cost should be reported")
 	}
-	if res.Stats.Elapsed == 0 {
-		t.Error("Elapsed = 0")
+	// Elapsed is deliberately not asserted to be non-zero. This query runs in
+	// well under a millisecond, and Windows' wall clock has a granularity of
+	// roughly 15ms, so a zero here is the clock's answer rather than a missing
+	// measurement.
+	if res.Stats.Elapsed < 0 {
+		t.Errorf("Elapsed = %v, want a non-negative duration", res.Stats.Elapsed)
 	}
 }
 

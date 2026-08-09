@@ -331,7 +331,7 @@ func (w *IndexWriter) writeTOC() error {
 // them once beats paying on every query. Series records and postings lists
 // stay in the mapping and are decoded on demand.
 type IndexReader struct {
-	f *os.File
+	m *mappedFile
 	b []byte
 
 	symbols       []string
@@ -343,17 +343,12 @@ type IndexReader struct {
 
 // OpenIndexReader maps and parses the index file in dir.
 func OpenIndexReader(dir string) (*IndexReader, error) {
-	f, err := os.Open(filepath.Join(dir, IndexFilename))
+	m, err := openMapped(filepath.Join(dir, IndexFilename))
 	if err != nil {
 		return nil, fmt.Errorf("block: opening the index: %w", err)
 	}
-	b, err := mmapFile(f)
-	if err != nil {
-		f.Close()
-		return nil, err
-	}
 
-	r := &IndexReader{f: f, b: b}
+	r := &IndexReader{m: m, b: m.Bytes()}
 	if err := r.init(); err != nil {
 		r.Close()
 		return nil, err
@@ -655,12 +650,8 @@ func (r *IndexReader) Symbols() []string { return r.symbols }
 
 // Close releases the mapping.
 func (r *IndexReader) Close() error {
-	err := munmapFile(r.b)
 	r.b = nil
-	if cerr := r.f.Close(); err == nil {
-		err = cerr
-	}
-	return err
+	return r.m.Close()
 }
 
 // bigEndianPostings iterates fixed-width big-endian series ids straight out of

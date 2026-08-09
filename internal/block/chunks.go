@@ -126,38 +126,33 @@ func (w *ChunkWriter) Close() error {
 
 // ChunkReader reads chunks out of a mapped chunk file.
 type ChunkReader struct {
-	f *os.File
+	m *mappedFile
 	b []byte
 }
 
 // OpenChunkReader maps the chunk file in dir.
 func OpenChunkReader(dir string) (*ChunkReader, error) {
-	f, err := os.Open(filepath.Join(dir, ChunksFilename))
+	m, err := openMapped(filepath.Join(dir, ChunksFilename))
 	if err != nil {
 		return nil, fmt.Errorf("block: opening the chunk file: %w", err)
 	}
-	b, err := mmapFile(f)
-	if err != nil {
-		f.Close()
-		return nil, err
+	b := m.Bytes()
+
+	fail := func(format string, args ...any) (*ChunkReader, error) {
+		m.Close()
+		return nil, fmt.Errorf(format, args...)
 	}
 	if len(b) < chunksHeaderSize {
-		munmapFile(b)
-		f.Close()
-		return nil, fmt.Errorf("%w: chunk file is %d bytes, shorter than its header", ErrCorruptBlock, len(b))
+		return fail("%w: chunk file is %d bytes, shorter than its header", ErrCorruptBlock, len(b))
 	}
 	if got := binary.BigEndian.Uint32(b[:4]); got != chunksMagic {
-		munmapFile(b)
-		f.Close()
-		return nil, fmt.Errorf("%w: chunk file magic is %#08x, want %#08x", ErrCorruptBlock, got, chunksMagic)
+		return fail("%w: chunk file magic is %#08x, want %#08x", ErrCorruptBlock, got, chunksMagic)
 	}
 	if b[4] != chunksFormatV1 {
-		munmapFile(b)
-		f.Close()
-		return nil, fmt.Errorf("block: chunk file format %d, this build understands %d", b[4], chunksFormatV1)
+		return fail("block: chunk file format %d, this build understands %d", b[4], chunksFormatV1)
 	}
 
-	return &ChunkReader{f: f, b: b}, nil
+	return &ChunkReader{m: m, b: b}, nil
 }
 
 // Chunk returns the chunk at ref. The returned chunk aliases the mapping, so
@@ -201,10 +196,6 @@ func (r *ChunkReader) Size() int { return len(r.b) }
 
 // Close releases the mapping.
 func (r *ChunkReader) Close() error {
-	err := munmapFile(r.b)
 	r.b = nil
-	if cerr := r.f.Close(); err == nil {
-		err = cerr
-	}
-	return err
+	return r.m.Close()
 }

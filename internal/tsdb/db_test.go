@@ -402,10 +402,19 @@ func TestDBRestartAfterCrash(t *testing.T) {
 		})
 	}
 
-	// Simulate a crash: stop the background loop and abandon the handles
-	// without flushing or closing the log.
+	// Simulate a crash: stop the background loop, so nothing flushes the head
+	// to a block or truncates the log. Recovery then has to come entirely from
+	// replay, which is the point of the test.
 	close(db.stopc)
 	<-db.donec
+
+	// Release the log's file handle without flushing anything. With
+	// SyncAlways every acknowledged write is already on disk, so this loses no
+	// data and stays faithful to the crash - but it does hand the descriptor
+	// back, which Windows requires before the directory can be removed.
+	if err := db.wal.Close(); err != nil {
+		t.Fatalf("releasing the log: %v", err)
+	}
 
 	db2 := openTestDB(t, dir, opts)
 	got := query(t, db2, model.MinTime, model.MaxTime,

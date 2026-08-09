@@ -126,6 +126,14 @@ func (c *evalContext) checkBudget(extra int) error {
 		return c.ctx.Err()
 	default:
 	}
+
+	// The channel only closes once the runtime's timer fires, which can lag
+	// the deadline by a whole tick - about 15ms on Windows. Comparing against
+	// the deadline directly means a query stops when its time is up rather
+	// than when the scheduler gets round to saying so.
+	if deadline, ok := c.ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return ErrTimeout
+	}
 	return nil
 }
 
