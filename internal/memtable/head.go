@@ -94,6 +94,13 @@ type Head struct {
 
 	numSamples atomic.Uint64
 
+	// commitMtx is held for reading while an appender applies its samples, and
+	// for writing while the floor is raised. Making those two mutually
+	// exclusive closes the window where a flush captures the head, a straggler
+	// commit lands a sample below the flush boundary, and truncation then
+	// drops it - a sample both acknowledged and lost.
+	commitMtx sync.RWMutex
+
 	// walBuf recycles the sample-encoding buffers used by appenders.
 	walBuf sync.Pool
 }
@@ -273,13 +280,37 @@ func (a *headAppender) Commit() error {
 		return err
 	}
 
-	// Durable; now make it visible.
+	// Durable; now make it visible. The read lock keeps the floor still for
+	// the duration, so a sample cannot be applied into a range that a
+	// concurrent flush has already captured and is about to truncate.
+	total := len(a.samples)
+
+	a.head.commitMtx.RLock()
+	floor := a.head.minValidTime.Load()
+
+	var (
+		dropped   int
+		firstDrop int64
+	)
 	for _, smpl := range a.samples {
+		if smpl.T < floor {
+			// A flush raised the floor past this sample while the batch was
+			// in flight. It is reported rather than dropped silently: the
+			// caller can retry or account for it, which is the whole point of
+			// not acknowledging a write that will not be readable.
+			if dropped == 0 {
+				firstDrop = smpl.T
+			}
+			dropped++
+			continue
+		}
+
 		s := a.head.series.getByRef(smpl.Ref)
 		if s == nil {
 			// The series was truncated away between Append and Commit. The
 			// sample is already in the WAL, but replay would drop it for the
 			// same reason, so the two stay consistent.
+			dropped++
 			continue
 		}
 		s.mtx.Lock()
@@ -290,13 +321,21 @@ func (a *headAppender) Commit() error {
 			// The only expected failure is a chunk-level ordering rejection,
 			// which Append already screened for; anything reaching here is a
 			// bug worth surfacing rather than swallowing.
+			a.head.commitMtx.RUnlock()
+			a.release()
 			return fmt.Errorf("memtable: applying committed sample for %s: %w", s.labels, err)
 		}
 		a.head.updateBounds(smpl.T)
 		a.head.numSamples.Add(1)
 	}
+	a.head.commitMtx.RUnlock()
 
 	a.release()
+
+	if dropped > 0 {
+		return fmt.Errorf("%w: %d of %d samples fell below the head floor of %d (first at %d)",
+			ErrOutOfBounds, dropped, total, floor, firstDrop)
+	}
 	return nil
 }
 
@@ -481,14 +520,31 @@ func (h *Head) Replay(dir string) (ReplayStats, error) {
 	return stats, nil
 }
 
+// RaiseFloor rejects samples before t without dropping any existing data.
+//
+// A flush calls this before it reads the head, so that the range it is about
+// to capture stops accepting new samples. Truncate then removes the data. Done
+// the other way round, a sample committed between the capture and the
+// truncation would be acknowledged and then thrown away.
+func (h *Head) RaiseFloor(t int64) {
+	h.commitMtx.Lock()
+	defer h.commitMtx.Unlock()
+
+	if t > h.minValidTime.Load() {
+		h.minValidTime.Store(t)
+	}
+}
+
 // Truncate drops every sample before mint and raises the floor for new ones.
 // Series left with no data at all are removed from the index entirely, which
 // is what keeps the head from leaking memory on churning label sets.
 func (h *Head) Truncate(mint int64) error {
-	if cur := h.minValidTime.Load(); mint <= cur {
-		return nil
+	// RaiseFloor may already have moved the floor past mint, in which case
+	// there is more to drop than the caller asked for, not less.
+	if cur := h.minValidTime.Load(); cur > mint {
+		mint = cur
 	}
-	h.minValidTime.Store(mint)
+	h.RaiseFloor(mint)
 
 	dropped := make(map[model.SeriesRef]struct{})
 	newMin := int64(math.MaxInt64)
