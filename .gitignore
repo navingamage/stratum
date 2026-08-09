@@ -1,0 +1,25 @@
+# Build output
+/bin/
+/dist/
+*.test
+*.out
+
+# Profiles
+*.pprof
+cpu.prof
+mem.prof
+
+# Local data directories
+/data/
+*.stratum/
+
+# Fuzz corpora are committed under testdata/fuzz; caches are not.
+**/testdata/fuzz/**/corpus/
+
+# Editors
+.idea/
+.vscode/
+*.iml
+
+# macOS
+.DS_Store
