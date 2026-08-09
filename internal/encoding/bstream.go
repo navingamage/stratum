@@ -3,6 +3,8 @@
 package encoding
 
 import (
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 )
@@ -107,6 +109,27 @@ func (w *BitWriter) WriteBits(u uint64, nbits int) {
 	}
 }
 
+// WriteUvarint writes x in LEB128 form. The bytes are emitted through
+// WriteByte, so this works at any bit alignment - which is the point, since
+// the chunk format interleaves varints with one- and two-bit control flags.
+func (w *BitWriter) WriteUvarint(x uint64) {
+	for x >= 0x80 {
+		_ = w.WriteByte(byte(x) | 0x80)
+		x >>= 7
+	}
+	_ = w.WriteByte(byte(x))
+}
+
+// WriteVarint writes x zig-zag encoded, so small magnitudes of either sign
+// stay in one byte.
+func (w *BitWriter) WriteVarint(x int64) {
+	ux := uint64(x) << 1
+	if x < 0 {
+		ux = ^ux
+	}
+	w.WriteUvarint(ux)
+}
+
 // BitReader consumes a stream produced by BitWriter.
 type BitReader struct {
 	buf []byte
@@ -192,4 +215,46 @@ func (r *BitReader) ReadBits(nbits int) (uint64, error) {
 		nbits--
 	}
 	return v, nil
+}
+
+// ErrVarintOverflow reports a varint whose continuation bits run past 64 bits.
+// A well-formed stream never produces one, so in practice this means the
+// buffer is corrupt or misaligned.
+var ErrVarintOverflow = errors.New("encoding: varint overflows 64 bits")
+
+// ReadUvarint reads a value written by WriteUvarint.
+func (r *BitReader) ReadUvarint() (uint64, error) {
+	var (
+		x uint64
+		s uint
+	)
+	for i := 0; i < binary.MaxVarintLen64; i++ {
+		b, err := r.ReadByte()
+		if err != nil {
+			return 0, err
+		}
+		if b < 0x80 {
+			// The tenth byte contributes only one usable bit.
+			if i == binary.MaxVarintLen64-1 && b > 1 {
+				return 0, ErrVarintOverflow
+			}
+			return x | uint64(b)<<s, nil
+		}
+		x |= uint64(b&0x7f) << s
+		s += 7
+	}
+	return 0, ErrVarintOverflow
+}
+
+// ReadVarint reads a value written by WriteVarint.
+func (r *BitReader) ReadVarint() (int64, error) {
+	ux, err := r.ReadUvarint()
+	if err != nil {
+		return 0, err
+	}
+	x := int64(ux >> 1)
+	if ux&1 != 0 {
+		x = ^x
+	}
+	return x, nil
 }
