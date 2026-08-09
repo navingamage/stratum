@@ -245,3 +245,66 @@ self-consistent and wrong.
 **Where I would not do this.** Anything cryptographic, anything with a
 specification that moves, and anything where being subtly wrong is silent.
 Compression and hashing have exhaustive test vectors; TLS does not.
+
+---
+
+## Block readers release the file descriptor at open time
+
+**Context.** A block's index and chunk files are mapped read-only for the
+lifetime of the reader. The obvious shape is to keep the `*os.File` alongside
+the mapping and close both together.
+
+**What went wrong.** That works on unix and is invisible there, because POSIX
+lets a file be unlinked while it is still open. Windows does not: it refuses to
+rename or delete a directory containing an open file. Compaction deletes a
+block's directory as soon as its replacement is published, so on Windows every
+compaction failed with `Access is denied` — eleven tests in `internal/tsdb`, all
+with the same cause and none of it visible on the platform I develop on.
+
+**Decision.** Close the descriptor before returning from `openMapped`.
+
+**Reasoning.** Neither platform needs it. A mapping does not depend on the
+descriptor — the kernel holds its own reference to the inode — and the non-unix
+fallback has already copied the bytes into memory, so there is nothing left to
+read from. Keeping it bought nothing and cost portability.
+
+**What it also fixed.** Two descriptors per open block against `RLIMIT_NOFILE`.
+At a few thousand blocks that is a real ceiling, and one that would have shown
+up as a mystifying `too many open files` long after the cause was introduced.
+
+**Why the Windows job exists at all.** Not because anyone will run this on
+Windows. It is there because it is the only build that exercises the
+read-into-memory fallback, and because a POSIX assumption is invisible until
+something refuses to honour it. This is the second one it caught — the first was
+fsyncing a directory, which Windows rejects outright.
+
+---
+
+## Range-check the uvarint at the conversion, not at the call sites
+
+**Context.** `Decbuf.Uvarint` returned `int(d.Uvarint64())`, and its callers
+bounds-checked the result before slicing with it.
+
+**What went wrong.** A uvarint too large for an `int` converts to a *negative*
+number. `len(buf) < n` is false for a negative `n`, so every bounds check
+written the obvious way passed it through, and the slice expression underneath
+panicked. A corrupt WAL record — nine bytes of label length — took the process
+down. `FuzzRecordDecode` found it.
+
+**Why the framing checksum does not help.** A CRC proves the bytes are the ones
+that were written. It says nothing about whether the writer was correct or
+whether the format version matches, which are exactly the cases that produce a
+record like this.
+
+**Decision.** Check the range inside `Uvarint`, and leave `Uvarint64`
+unrestricted.
+
+**Reasoning.** The bug is a property of the return type, not of any particular
+caller. Fixing it at each call site fixes the callers that exist; fixing it at
+the conversion fixes the ones not yet written, which is where the next instance
+would have come from. `Uvarint` exists as a separate method precisely because
+its result feeds slice bounds — that is the place the constraint belongs.
+
+**Kept.** The crasher is committed under `testdata/fuzz` as a regression seed,
+and the behaviour is pinned again in `internal/encoding` at the layer the bug
+actually lived in.

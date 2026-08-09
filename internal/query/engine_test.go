@@ -821,15 +821,81 @@ func TestSampleLimit(t *testing.T) {
 	}
 }
 
-func TestQueryTimeout(t *testing.T) {
+// TestQueryHonoursCallerCancellation covers the case that actually happens in
+// production: the client goes away, or the server is shutting down, and the
+// query should stop rather than finish work nobody will read.
+//
+// This is deterministic. The parent context is already finished before the
+// engine is called, so there is no timer to wait for and no clock granularity
+// to lose a race against - which is exactly what the previous version of this
+// test did on Windows.
+func TestQueryHonoursCallerCancellation(t *testing.T) {
 	db := testDB(t, 1000, `v{host="a"} 1 2 3`)
-
-	engine := NewEngine(EngineOptions{Timeout: time.Nanosecond})
+	engine := NewEngine(EngineOptions{})
 	expr := MustParse(`v`)
 
-	// The deadline has certainly passed by the time evaluation starts.
-	time.Sleep(time.Millisecond)
-	_, err := engine.Instant(context.Background(), db, expr, 2000)
+	t.Run("cancelled", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		_, err := engine.Instant(ctx, db, expr, 2000)
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("error = %v, want context.Canceled", err)
+		}
+	})
+
+	t.Run("deadline already passed", func(t *testing.T) {
+		ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Hour))
+		defer cancel()
+
+		_, err := engine.Instant(ctx, db, expr, 2000)
+		if !errors.Is(err, ErrTimeout) && !errors.Is(err, context.DeadlineExceeded) {
+			t.Errorf("error = %v, want a timeout", err)
+		}
+	})
+
+	t.Run("range query", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		_, err := engine.Range(ctx, db, expr, 0, 2000, 1000)
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("error = %v, want context.Canceled", err)
+		}
+	})
+}
+
+// TestQueryTimeout covers the engine's own deadline, which is separate from
+// the caller's.
+//
+// The engine computes its deadline inside Instant, so a timeout shorter than
+// one clock tick is unobservable: `now` and `now + 1ns` read as the same
+// instant on a coarse clock, and the query finishes before its deadline
+// appears to have passed. That is not a bug in the engine, but it did make the
+// earlier version of this test fail on Windows, where the wall clock advances
+// in ~15ms steps.
+//
+// The fix is to give the query enough work that it cannot possibly finish
+// within a tick, rather than to assume the deadline check runs instantly.
+func TestQueryTimeout(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a dataset large enough to outlast a clock tick")
+	}
+
+	var sb strings.Builder
+	for i := 0; i < 400; i++ {
+		fmt.Fprintf(&sb, "v{host=\"h-%03d\"}", i)
+		for j := 0; j < 200; j++ {
+			fmt.Fprintf(&sb, " %d", j)
+		}
+		sb.WriteByte('\n')
+	}
+	db := testDB(t, 1000, sb.String())
+
+	engine := NewEngine(EngineOptions{Timeout: time.Nanosecond})
+	expr := MustParse(`v[200s]`)
+
+	_, err := engine.Instant(context.Background(), db, expr, 200_000)
 	if err == nil {
 		t.Fatal("expected a timeout")
 	}
