@@ -147,9 +147,12 @@ func (d *Decoder) Type(rec []byte) RecordType {
 
 // Series decodes a series record, appending to into.
 //
-// The decoded labels alias rec, so callers that retain them past the next
-// record - which replay does, since it builds the index from them - must copy
-// first. Replay is the only caller and does exactly that.
+// Label names and values are copied out of rec rather than aliasing it. The
+// zero-copy alternative is a trap: the replayer reuses one buffer for every
+// record, and Labels.Copy clones the slice but not the string data it points
+// at, so the obvious defensive call at the call site does not actually
+// defend. Replay runs once per restart, so the copies are not worth the
+// class of bug they avoid.
 func (d *Decoder) Series(rec []byte, into []RefSeries) ([]RefSeries, error) {
 	dec := encoding.NewDecbuf(rec)
 	if RecordType(dec.Byte()) != RecordSeries {
@@ -172,8 +175,8 @@ func (d *Decoder) Series(rec []byte, into []RefSeries) ([]RefSeries, error) {
 		lbls := make(model.Labels, 0, n)
 		for i := 0; i < n; i++ {
 			lbls = append(lbls, model.Label{
-				Name:  dec.UvarintStr(),
-				Value: dec.UvarintStr(),
+				Name:  string(dec.UvarintBytes()),
+				Value: string(dec.UvarintBytes()),
 			})
 		}
 		if dec.Err() != nil {
